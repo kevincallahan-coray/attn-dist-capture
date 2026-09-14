@@ -1,0 +1,28 @@
+# CPU-only pod for inspecting and copying dumps off the PVC.
+# kevin-workspace is ReadWriteOnce rook-ceph-block: this pod cannot run at the
+# same time as a capture Job that mounts the same PVC.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: attn-dist-shell
+spec:
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: python:3.11-slim
+      command: ["bash", "-lc"]
+      args: ["pip install -q 'numpy<2' && sleep 86400"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 4Gi
+        limits:
+          cpu: "2"
+          memory: 8Gi
+      volumeMounts:
+        - name: work
+          mountPath: /work
+  volumes:
+    - name: work
+      persistentVolumeClaim:
+        claimName: kevin-workspace

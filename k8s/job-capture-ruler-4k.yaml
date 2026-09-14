@@ -1,0 +1,113 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: attn-capture-ruler-4k
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.memory
+                    operator: Gt
+                    values: ["20000"]
+                  - key: nvidia.com/gpu.compute.major
+                    operator: Gt
+                    values: ["6"]
+      initContainers:
+        - name: clone
+          image: alpine/git
+          command: ["sh", "-c"]
+          args:
+            - git clone --depth 1 https://github.com/kevincallahan-coray/attn-dist-capture.git /repo
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+      containers:
+        - name: run
+          image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              cd /repo
+              DATA_ROOT=/shared/ruler/data/4096_100
+              OUT_ROOT=/work/attn-dist/ruler_4096
+              mkdir -p "$OUT_ROOT"
+
+              python -m venv /tmp/attn-venv
+              source /tmp/attn-venv/bin/activate
+              python -m pip install -q --upgrade pip
+              python -m pip install -q torch --index-url https://download.pytorch.org/whl/cu128
+              python -m pip install -q -r requirements.txt
+              nvidia-smi
+
+              # One dump per task: task identity is a real covariate for the
+              # shape of the attention distribution, so keep them separable.
+              for TASK in qa_1 qa_2 fwe niah_multivalue; do
+                DATA="$DATA_ROOT/$TASK/validation.jsonl"
+                test -f "$DATA"
+                echo "=== capturing $TASK ==="
+                python dump_attention.py \
+                  --out-dir "$OUT_ROOT/$TASK" \
+                  --dataset "$DATA" \
+                  --max-input-tokens 4096 \
+                  --max-examples 20 \
+                  --max-new-tokens 64 \
+                  --step-prob 0.25 \
+                  --pairs-per-step 8 \
+                  --save-v \
+                  --max-records 3000 \
+                  --seed 1690
+                python inspect_dump.py "$OUT_ROOT/$TASK" --check 128
+              done
+
+              echo "=== dump sizes ==="
+              du -sh "$OUT_ROOT"/*
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+            - name: HF_HOME
+              value: /work/santa-adaptive-z/hf
+          resources:
+            requests:
+              cpu: "2"
+              memory: 24Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: 40Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+            - name: work
+              mountPath: /work
+            - name: shared
+              mountPath: /shared
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: repo
+          emptyDir: {}
+        - name: work
+          persistentVolumeClaim:
+            claimName: kevin-workspace
+        - name: shared
+          persistentVolumeClaim:
+            claimName: kevin-ruler-shared
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
