@@ -169,21 +169,68 @@ It verifies normalization, checks `av == probs @ V`, and reports the
 peaked/diffuse breakdown by layer band. On the cluster, run the same thing via
 `kubectl apply -f k8s/job-inspect-dump.yaml`.
 
-A worked estimator comparison (i.i.d. vs systematic, swept over `S`):
+Run the sampler sweep locally on one task:
 
 ```bash
-python example_sampler_eval.py dumps/ruler_4096/qa_1 --budgets 8,32,128
+python eval_samplers.py --dump dumps/ruler_4096/qa_1 --out results/qa_1.jsonl
+python aggregate_results.py --inputs 'results/*.jsonl' --out-dir summary
 ```
 
-### One caveat on the error metric
+## Evaluating samplers
 
-`example_sampler_eval.py` reports relative L2, `‖ÂV − AV‖ / ‖AV‖`. In the
-diffuse stratum `‖AV‖` gets small — near-uniform weights average roughly
-zero-mean value rows toward zero — so relative error there is large by
-construction and not directly comparable across strata. Absolute error, or
-error relative to `‖V‖`/`tr(Σ)`, is the fairer cross-stratum comparison. Pick
-the metric deliberately before drawing conclusions about which sampler wins
-where.
+Three jobs, run in order (`scripts\run-eval-pipeline.bat` chains them):
+
+```bash
+kubectl apply -f k8s/job-stage-to-shared.yaml    # workspace -> CephFS
+kubectl apply -f k8s/job-eval-samplers.yaml      # 4 tasks in parallel
+kubectl apply -f k8s/job-aggregate-results.yaml  # rates, CSVs, plots
+```
+
+The staging step exists because `kevin-workspace` is ReadWriteOnce: four eval
+pods cannot reliably mount it at once. Copying the dump to the CephFS
+`kevin-ruler-shared` volume first makes the eval embarrassingly parallel, and it
+means evaluation can run while a capture job still holds the workspace volume.
+The eval Job uses `completionMode: Indexed`, so `JOB_COMPLETION_INDEX` picks the
+task and one Job object covers all four.
+
+Everything is CPU-only. No GPU is requested for any of it.
+
+### What gets measured
+
+Error is always on the attention output `AV`, never on index histograms, since
+that is what propagates into the model. Three normalizations are recorded:
+
+- `abs_mean` — raw `‖ÂV − AV‖`
+- `rel_mean` — divided by `‖AV‖`. **Collapses on diffuse records**: near-uniform
+  weights average roughly zero-mean value rows toward zero, so the denominator
+  goes small and relative error looks catastrophic for reasons that have nothing
+  to do with the sampler.
+- `scaled_mean` — divided by `‖V‖_F/√nk`, the RMS norm of a value row. Does not
+  depend on cancellation, so it is comparable across strata. **This is the
+  default for cross-stratum claims.**
+
+Plus `argmax_hit_rate` and `p90`/`p99` error, because mean error hides the
+failure that matters: a sampler that is usually fine but occasionally misses the
+argmax on a peaked distribution.
+
+### The headline is the slope, not the level
+
+`aggregate_results.py` fits `err ~ C·S^slope` per stratum. i.i.d. Monte Carlo is
+pinned at −0.5 by the CLT. A sampler that only moves `C` buys a constant factor;
+one that steepens the slope changes what is reachable at a given budget. A
+bar chart at a single `S` cannot tell those apart.
+
+### The ordering control
+
+Systematic sampling wins when adjacent indices carry similar values. Here the
+index axis is *token position*, and there is no a priori reason adjacent tokens
+have similar value rows. So every configuration is run twice: on the natural
+order, and on a random permutation of the same distribution. The permutation
+leaves the weights untouched and destroys only positional structure. If an
+advantage survives the shuffle it is variance reduction; if it vanishes, the
+sampler was exploiting position — which matters for whether the result
+transfers to other models or context lengths. i.i.d. should be unaffected by
+the shuffle; that doubles as a correctness check on the harness.
 
 ## Files
 
@@ -192,7 +239,9 @@ attn_capture.py           capture backend + stratified selection controller
 attn_store.py             ShardWriter / AttnDump read-write format
 dump_attention.py         main runner
 inspect_dump.py           validation + population stats
-example_sampler_eval.py   worked estimator comparison
+samplers.py               iid / systematic / stratified / MCMC implementations
+eval_samplers.py          per-record error sweep, writes JSONL
+aggregate_results.py      merges shards, fits rates, plots
 k8s/                      Nautilus Jobs (capture, inspect, export)
 scripts/                  Windows helpers matching the adaptive-SANTA workflow
 ```

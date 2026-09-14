@@ -1,0 +1,77 @@
+# Parallel sampler evaluation: one pod per RULER task, run concurrently.
+#
+# Indexed completion mode gives each pod a JOB_COMPLETION_INDEX (0..3) that
+# selects its task, so four tasks run as one Job object instead of four
+# copy-pasted YAMLs. Reads and writes CephFS only -- nothing touches the RWO
+# workspace volume, so these can run while a capture job is using it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: attn-eval-samplers
+spec:
+  completions: 4
+  parallelism: 4
+  completionMode: Indexed
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 10800
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: clone
+          image: alpine/git
+          command: ["sh", "-c"]
+          args:
+            - git clone --depth 1 https://github.com/kevincallahan-coray/attn-dist-capture.git /repo
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+      containers:
+        - name: eval
+          image: python:3.11-slim
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              TASKS=(qa_1 qa_2 fwe niah_multivalue)
+              TASK="${TASKS[$JOB_COMPLETION_INDEX]}"
+              echo "index=$JOB_COMPLETION_INDEX task=$TASK"
+
+              pip install -q "numpy<2"
+              cd /repo
+
+              DUMP=/shared/attn-dist/ruler_4096/$TASK
+              OUT=/shared/attn-eval/ruler_4096/${TASK}.jsonl
+              test -d "$DUMP"
+              mkdir -p "$(dirname "$OUT")"
+
+              python eval_samplers.py \
+                --dump "$DUMP" \
+                --out "$OUT" \
+                --budgets 4,8,16,32,64,128,256,512 \
+                --trials 32 \
+                --max-records 300 \
+                --stratify-balanced \
+                --samplers iid,systematic,stratified \
+                --orders natural,shuffled \
+                --seed "$JOB_COMPLETION_INDEX"
+
+              wc -l "$OUT"
+          resources:
+            requests: {cpu: "2", memory: 8Gi}
+            limits: {cpu: "4", memory: 16Gi}
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+            - name: shared
+              mountPath: /shared
+      volumes:
+        - name: repo
+          emptyDir: {}
+        - name: shared
+          persistentVolumeClaim:
+            claimName: kevin-ruler-shared

@@ -1,0 +1,57 @@
+# Merge the parallel eval shards, fit convergence rates, write CSVs and plots.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: attn-aggregate-results
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 3600
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: clone
+          image: alpine/git
+          command: ["sh", "-c"]
+          args:
+            - git clone --depth 1 https://github.com/kevincallahan-coray/attn-dist-capture.git /repo
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+      containers:
+        - name: aggregate
+          image: python:3.11-slim
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              pip install -q "numpy<2" matplotlib
+              cd /repo
+              python aggregate_results.py \
+                --inputs '/shared/attn-eval/ruler_4096/*.jsonl' \
+                --out-dir /shared/attn-eval/summary_4096 \
+                --metric scaled_mean
+              echo "=== also with relative-L2 for comparison ==="
+              python aggregate_results.py \
+                --inputs '/shared/attn-eval/ruler_4096/*.jsonl' \
+                --out-dir /shared/attn-eval/summary_4096_rel \
+                --metric rel_mean --no-plot
+              ls -R /shared/attn-eval/summary_4096
+          resources:
+            requests: {cpu: "1", memory: 4Gi}
+            limits: {cpu: "2", memory: 8Gi}
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+            - name: shared
+              mountPath: /shared
+      volumes:
+        - name: repo
+          emptyDir: {}
+        - name: shared
+          persistentVolumeClaim:
+            claimName: kevin-ruler-shared

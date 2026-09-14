@@ -1,0 +1,66 @@
+# Copy the 4k dump from kevin-workspace (ReadWriteOnce) to kevin-ruler-shared
+# (CephFS, ReadWriteMany), then exit.
+#
+# This staging step exists purely to enable parallelism: RWO binds the volume to
+# a single node, so four eval pods cannot reliably mount it at once. CephFS can.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: attn-stage-to-shared
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 7200
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: prepare-dirs
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /shared/attn-dist /shared/attn-eval
+              chown -R 1000:1000 /shared/attn-dist /shared/attn-eval
+              ls -ld /shared/attn-dist /shared/attn-eval
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: shared
+              mountPath: /shared
+      containers:
+        - name: stage
+          image: python:3.11-slim
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              SRC=/work/attn-dist/ruler_4096
+              DST=/shared/attn-dist/ruler_4096
+              test -d "$SRC"
+              mkdir -p "$DST"
+              cp -r "$SRC"/. "$DST"/
+              echo "=== staged ==="
+              du -sh "$DST"/*
+              find "$DST" -name index.jsonl | while read -r f; do
+                echo "$(dirname "$f"): $(wc -l < "$f") records"
+              done
+          resources:
+            requests: {cpu: "2", memory: 4Gi}
+            limits: {cpu: "4", memory: 8Gi}
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: shared
+              mountPath: /shared
+      volumes:
+        - name: work
+          persistentVolumeClaim:
+            claimName: kevin-workspace
+        - name: shared
+          persistentVolumeClaim:
+            claimName: kevin-ruler-shared
