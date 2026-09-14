@@ -1,12 +1,12 @@
 @echo off
 setlocal
-REM Copies dumps off the PVC into .\dumps. No capture Job may be running,
-REM because kevin-workspace is ReadWriteOnce.
-set SRC=%1
+REM Pull a dump tarball off the PVC. Requires the export job to have run and
+REM a pod that currently mounts kevin-workspace (RWO: one pod at a time).
+REM Pass the running pod name as the first argument.
+set POD=%1
+set SRC=%2
 if "%SRC%"=="" set SRC=ruler_4096
-kubectl apply -f k8s\shell-attn-dist.yaml
-kubectl wait --for=condition=ready pod/attn-dist-shell --timeout=300s
+if "%POD%"=="" echo Usage: download-dumps.bat POD_NAME [DUMP_NAME] && exit /b 1
 if not exist dumps mkdir dumps
-kubectl cp attn-dist-shell:/work/attn-dist/%SRC% dumps\%SRC%
-echo Copied to dumps\%SRC%
-echo Remove the shell pod with: kubectl delete pod attn-dist-shell
+kubectl cp %POD%:/work/attn-dist/%SRC%.tar.gz dumps\%SRC%.tar.gz
+echo Wrote dumps\%SRC%.tar.gz

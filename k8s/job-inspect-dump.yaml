@@ -1,0 +1,52 @@
+# Inspect a dump on the PVC. Runs the validation, prints, and exits.
+# No idle process: NRP prohibits sleeping/idle pods.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: attn-inspect-dump
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 1800
+      initContainers:
+        - name: clone
+          image: alpine/git
+          command: ["sh", "-c"]
+          args:
+            - git clone --depth 1 https://github.com/kevincallahan-coray/attn-dist-capture.git /repo
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+      containers:
+        - name: inspect
+          image: python:3.11-slim
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              pip install -q "numpy<2"
+              cd /repo
+              echo "=== dumps present ==="
+              du -sh /work/attn-dist/* 2>/dev/null || echo "none yet"
+              for D in /work/attn-dist/ruler_4096/*; do
+                test -f "$D/index.jsonl" || continue
+                echo; echo "=== $D ==="
+                python inspect_dump.py "$D" --check 128
+              done
+          resources:
+            requests: {cpu: "1", memory: 4Gi}
+            limits: {cpu: "2", memory: 8Gi}
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: repo
+          emptyDir: {}
+        - name: work
+          persistentVolumeClaim:
+            claimName: kevin-workspace

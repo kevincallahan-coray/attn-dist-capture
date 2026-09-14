@@ -8,17 +8,9 @@ spec:
   template:
     spec:
       restartPolicy: Never
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: nvidia.com/gpu.memory
-                    operator: Gt
-                    values: ["20000"]
-                  - key: nvidia.com/gpu.compute.major
-                    operator: Gt
-                    values: ["6"]
+      # No nodeAffinity: kevin-workspace is a rook-ceph-block (RWO) PVC and is
+      # topology-pinned to one Ceph cluster. Adding GPU-label affinity on top of
+      # that volume constraint can empty the candidate node set entirely.
       initContainers:
         - name: clone
           image: alpine/git

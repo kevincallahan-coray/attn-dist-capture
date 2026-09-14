@@ -82,9 +82,29 @@ The RULER job reads `/shared/ruler/data/4096_100/<task>/validation.jsonl` on the
 ### PVC constraint
 
 `kevin-workspace` is `rook-ceph-block`, ReadWriteOnce. **One pod at a time.**
-A capture Job and the inspection shell pod cannot both mount it — and neither
-can a SANTA benchmark Job. Run captures serially. If you later want concurrent
-captures, write output to the CephFS `kevin-ruler-shared` volume instead.
+A capture Job, an inspect Job, and a SANTA benchmark Job cannot all mount it at
+once. Run them serially. If you later want concurrent captures, write output to
+the CephFS `kevin-ruler-shared` volume instead.
+
+### No idle pods
+
+NRP prohibits pods that sit idle (`sleep`, `tail -f`, interactive shells parked
+overnight). Every Job here does real work and exits, and carries
+`activeDeadlineSeconds` as a backstop. To look at a dump, run
+`k8s/job-inspect-dump.yaml` rather than opening a shell; to get data off the
+PVC, run `k8s/job-export-dump.yaml` to produce a tarball and pull it during a
+job that is already running, or push it to the NRP S3 store.
+
+### Tearing a run down
+
+```bash
+kubectl delete job attn-capture-ruler-4k     # job + its pods
+kubectl get pods                             # check nothing lingers
+kubectl delete pod <name> --force --grace-period=0
+```
+
+Windows: `scripts\delete-run.bat` removes every job this repo creates. PVC data
+is untouched; delete that from inside a job with `rm -rf /work/attn-dist/<dir>`.
 
 ---
 
@@ -132,7 +152,8 @@ python inspect_dump.py dumps/ruler_4096/qa_1 --check 128
 ```
 
 It verifies normalization, checks `av == probs @ V`, and reports the
-peaked/diffuse breakdown by layer band.
+peaked/diffuse breakdown by layer band. On the cluster, run the same thing via
+`kubectl apply -f k8s/job-inspect-dump.yaml`.
 
 A worked estimator comparison (i.i.d. vs systematic, swept over `S`):
 
@@ -158,6 +179,6 @@ attn_store.py             ShardWriter / AttnDump read-write format
 dump_attention.py         main runner
 inspect_dump.py           validation + population stats
 example_sampler_eval.py   worked estimator comparison
-k8s/                      Nautilus Jobs and inspection pod
+k8s/                      Nautilus Jobs (capture, inspect, export)
 scripts/                  Windows helpers matching the adaptive-SANTA workflow
 ```
