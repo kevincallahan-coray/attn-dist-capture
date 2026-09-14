@@ -86,6 +86,20 @@ A capture Job, an inspect Job, and a SANTA benchmark Job cannot all mount it at
 once. Run them serially. If you later want concurrent captures, write output to
 the CephFS `kevin-ruler-shared` volume instead.
 
+### PVC permissions
+
+The `prp/jupyter-stack` image runs as uid 1000, but the PVC root is owned by
+root, so a non-root process cannot create a top-level directory on it —
+`mkdir: cannot create directory '/work/attn-dist': Permission denied`. Every
+Job therefore runs a root `prepare-dirs` initContainer that creates the output
+tree, `chgrp`s it to 1000, and sets the setgid bit so later files inherit the
+group. This mirrors what `adaptive-SANTA`'s RULER prepare job does.
+
+If you still hit permission errors, check ownership from inside the inspect
+job with `ls -ld /work /work/attn-dist /work/santa-adaptive-z/hf`. A cache
+directory written by a job running under a different uid is the next most
+likely culprit.
+
 ### No idle pods
 
 NRP prohibits pods that sit idle (`sleep`, `tail -f`, interactive shells parked

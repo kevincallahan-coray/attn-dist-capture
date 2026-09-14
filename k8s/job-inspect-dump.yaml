@@ -1,5 +1,5 @@
-# Inspect a dump on the PVC. Runs the validation, prints, and exits.
-# No idle process: NRP prohibits sleeping/idle pods.
+# Inspect dumps on the PVC: validate, print stats, exit.
+# No idle process; NRP prohibits sleeping/parked pods.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -11,7 +11,25 @@ spec:
     spec:
       restartPolicy: Never
       activeDeadlineSeconds: 1800
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       initContainers:
+        - name: prepare-dirs
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /work/attn-dist
+              chown -R 1000:1000 /work/attn-dist
+              chmod -R u+rwX,g+rwX /work/attn-dist
+              ls -ld /work /work/attn-dist
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: work
+              mountPath: /work
         - name: clone
           image: alpine/git
           command: ["sh", "-c"]
@@ -31,7 +49,7 @@ spec:
               cd /repo
               echo "=== dumps present ==="
               du -sh /work/attn-dist/* 2>/dev/null || echo "none yet"
-              for D in /work/attn-dist/ruler_4096/*; do
+              for D in /work/attn-dist/*/*; do
                 test -f "$D/index.jsonl" || continue
                 echo; echo "=== $D ==="
                 python inspect_dump.py "$D" --check 128

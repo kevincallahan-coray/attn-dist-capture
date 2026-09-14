@@ -1,6 +1,4 @@
 # Package a dump into a single tarball on the PVC, then exit.
-# Set DUMP to the subdirectory you want. Pull the tarball afterwards with
-# the NRP S3 store (preferred) or a short-lived transfer pod.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -12,6 +10,9 @@ spec:
     spec:
       restartPolicy: Never
       activeDeadlineSeconds: 3600
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: export
           image: python:3.11-slim
@@ -22,9 +23,9 @@ spec:
               DUMP=ruler_4096
               cd /work/attn-dist
               test -d "$DUMP"
-              tar czf "/work/attn-dist/${DUMP}.tar.gz" "$DUMP"
-              ls -lh "/work/attn-dist/${DUMP}.tar.gz"
-              echo "sha256:"; sha256sum "/work/attn-dist/${DUMP}.tar.gz"
+              tar czf "${DUMP}.tar.gz" "$DUMP"
+              ls -lh "${DUMP}.tar.gz"
+              echo "sha256:"; sha256sum "${DUMP}.tar.gz"
           resources:
             requests: {cpu: "1", memory: 4Gi}
             limits: {cpu: "2", memory: 8Gi}
