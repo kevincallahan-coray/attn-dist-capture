@@ -39,6 +39,8 @@ class CaptureConfig:
     # long context (32k x 128 fp16 = 8.4 MB per unique layer/kv-head/step), so
     # keep every distribution but only enough V to measure estimator error.
     v_fraction: float = 1.0
+    # Storage dtype for V. fp16 halves the dump; fp32 is exact but doubles it.
+    v_dtype: str = "fp16"
     # Save the pre-softmax masked+scaled scores alongside the probabilities.
     save_scores: bool = False
     seed: int = 0
@@ -155,6 +157,30 @@ def _kv_head(head: int, num_key_value_groups: int) -> int:
     return head // max(1, num_key_value_groups)
 
 
+_V_OVERFLOW_WARNED = False
+
+
+def _v_to_numpy(v_mat: "torch.Tensor", dtype: str = "fp16") -> np.ndarray:
+    """Convert V to numpy. Always goes through fp32 first: the model tensor is
+    bfloat16 and numpy has no bf16 dtype, so a direct .numpy() raises
+    ``TypeError: Got unsupported ScalarType BFloat16``.
+
+    bf16 carries a far wider exponent range than fp16 (~3.4e38 vs 65504), so
+    the narrowing is checked once rather than assumed safe.
+    """
+    global _V_OVERFLOW_WARNED
+    arr = v_mat.detach().float().cpu().numpy()
+    if dtype == "fp32":
+        return arr
+    out = arr.astype(np.float16)
+    finite_in = np.isfinite(arr)
+    if not _V_OVERFLOW_WARNED and not np.isfinite(out[finite_in]).all():
+        _V_OVERFLOW_WARNED = True
+        print("WARNING: V rows overflowed fp16 and were clipped to inf. "
+              "Rerun with --v-dtype fp32.", flush=True)
+    return out
+
+
 def _describe(probs32: torch.Tensor) -> dict:
     """Cheap on-GPU summary stats, so the index is sliceable without loading arrays."""
     p = probs32
@@ -232,11 +258,11 @@ def capture_attention_forward(module, query, key, value, attention_mask, scaling
                 **_describe(probs),
             }
             arrays = {
-                "probs": probs.cpu().numpy().astype(np.float32),
-                "av": av.cpu().numpy().astype(np.float32),
+                "probs": probs.float().cpu().numpy(),
+                "av": av.float().cpu().numpy(),
             }
             if cfg.save_scores:
-                arrays["scores"] = scores.cpu().numpy().astype(np.float32)
+                arrays["scores"] = scores.float().cpu().numpy()
             v_key = None
             if cfg.save_v:
                 # nk is in the key so a shape mismatch can never alias two
@@ -250,7 +276,7 @@ def capture_attention_forward(module, query, key, value, attention_mask, scaling
                 elif cfg.v_fraction >= 1.0 or CONTROLLER.roll_v():
                     v_key = key
                     arrays["__v_shared__"] = (
-                        key, v_mat.cpu().numpy().astype(np.float16))
+                        key, _v_to_numpy(v_mat, cfg.v_dtype))
             meta["v_key"] = v_key
             CONTROLLER.sink.add(meta, arrays)
             CONTROLLER.records_written += 1

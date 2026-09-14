@@ -79,6 +79,8 @@ def main() -> None:
     p.add_argument("--v-fraction", type=float, default=1.0,
                    help="fraction of captured records that store V; V dominates "
                         "dump size at long context")
+    p.add_argument("--v-dtype", choices=["fp16", "fp32"], default="fp16",
+                   help="storage dtype for V rows")
     p.add_argument("--save-scores", action="store_true",
                    help="also store pre-softmax masked scores")
     p.add_argument("--max-records", type=int, default=100_000)
@@ -111,6 +113,7 @@ def main() -> None:
         stratify_layers=not args.no_stratify,
         save_v=args.save_v,
         v_fraction=args.v_fraction,
+        v_dtype=args.v_dtype,
         save_scores=args.save_scores,
         seed=args.seed,
         max_records=args.max_records,
@@ -121,7 +124,8 @@ def main() -> None:
     nk = args.max_input_tokens
     d_head = cfg.hidden_size // num_heads
     per_rec = 4 * nk + 4 * d_head + (4 * nk if args.save_scores else 0)
-    per_v = (2 * nk * d_head) if args.save_v else 0
+    v_bytes = 2 if args.v_dtype == 'fp16' else 4
+    per_v = (v_bytes * nk * d_head) if args.save_v else 0
     # ~1/groups of records share a V, and only v_fraction of those store it.
     groups = num_heads // cfg.num_key_value_heads
     proj = args.max_records * (per_rec + per_v * args.v_fraction / max(1, groups))

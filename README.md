@@ -16,7 +16,7 @@ Storage goes under `/work/attn-dist/` on the existing `kevin-workspace` PVC.
 |---|---|---|---|
 | `probs` | **float32** | `[nk]` | The distribution itself. fp32 because at 4k–32k context a real chunk of the tail sits below 6e-8 and would flush to zero in fp16 — that tail is exactly what distinguishes samplers. |
 | `av` | float32 | `[d]` | Exact `probs @ V`. Ground truth for estimator error. |
-| `V` | float16 | `[nk, d]` | Optional (`--save-v`). **Without it you cannot score an estimator** — only the index distribution. Deduped per GQA group (32 q-heads / 8 kv-heads = 4× saving) and subsettable with `--v-fraction`. |
+| `V` | float16 (`--v-dtype fp32` for exact) | `[nk, d]` | Optional (`--save-v`). **Without it you cannot score an estimator** — only the index distribution. Deduped per GQA group (32 q-heads / 8 kv-heads = 4× saving) and subsettable with `--v-fraction`. |
 | `scores` | float32 | `[nk]` | Optional (`--save-scores`). Pre-softmax masked scores, if you want to re-do softmax at another precision. |
 
 Each record also carries flat metadata in `index.jsonl`: `layer`, `head`,
