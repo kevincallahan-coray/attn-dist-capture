@@ -1,18 +1,29 @@
 """Samplers under test.
 
-All of these draw indices from Categorical(p) where p = softmax(scores), so the
-attention-output estimator is the unweighted mean of the gathered value rows:
+All draw indices from Categorical(p), p = softmax(scores), so the attention
+output estimator is the unweighted mean of the gathered value rows:
 
     AV_hat = (1/S) * sum_s V[idx_s]
 
-Everything is vectorized on the CDF. The ``while cdf[idx] < thresh`` scan in the
-reference implementation is O(nk) per draw; ``searchsorted`` is O(log nk), which
-matters when nk is 4096 and you are running thousands of trials.
+Everything exposes a *batched* interface returning shape ``(T, S)`` for T
+independent trials. For the MCMC samplers this is what makes the sweep
+tractable: T chains advance together as one length-T vector per step, instead
+of T separate Python loops.
+
+Cost model note
+---------------
+i.i.d., systematic and stratified all need the normalizing constant and a CDF,
+which is O(nk). MCMC needs neither -- a Metropolis or Glauber step only ever
+compares two unnormalized scores. That is the real argument for MCMC here, and
+it means a step-for-step comparison understates it. Use ``--mcmc-extra-budgets``
+to hand MCMC the step count its cheaper steps would actually buy.
 """
 
 from __future__ import annotations
 
 import numpy as np
+
+# --------------------------------------------------------------- CDF samplers
 
 
 def _cdf(probs: np.ndarray) -> tuple[np.ndarray, float]:
@@ -24,95 +35,114 @@ def _pick(cdf: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
     return np.searchsorted(cdf, thresholds, side="right").clip(max=len(cdf) - 1)
 
 
-def sample_iid(probs, S, rng):
-    """SANTA: S independent draws from Categorical(p)."""
+def batch_iid(probs, S, rng, T):
+    """SANTA: S independent draws from Categorical(p), T times."""
     cdf, Z = _cdf(probs)
-    return _pick(cdf, rng.random(S) * Z)
+    return _pick(cdf, rng.random((T, S)) * Z)
 
 
-def sample_systematic(probs, S, rng):
-    """One shared uniform offset, S evenly spaced CDF thresholds.
+def batch_systematic(probs, S, rng, T):
+    """One shared uniform offset per trial, S evenly spaced CDF thresholds.
 
-    Draws are maximally spread but fully correlated: the whole grid shifts
-    together, so there is exactly one source of randomness regardless of S.
+    Draws are maximally spread but fully correlated: the entire grid shifts
+    together, so there is one source of randomness regardless of S.
     """
     cdf, Z = _cdf(probs)
     delta = Z / S
-    return _pick(cdf, (rng.random() + np.arange(S)) * delta)
+    thr = (rng.random((T, 1)) + np.arange(S)[None, :]) * delta
+    return _pick(cdf, thr)
 
 
-def sample_stratified(probs, S, rng):
+def batch_stratified(probs, S, rng, T):
     """One *independent* uniform per stratum.
 
-    This is the part that differs from systematic. Each of the S equal-mass
-    strata gets its own u_i ~ U[0,1), so draws stay independent across strata
-    while still guaranteeing one sample per stratum.
+    This is what distinguishes stratified from systematic. Each of the S
+    equal-mass strata gets its own u ~ U[0,1), so draws stay independent across
+    strata while still guaranteeing one sample per stratum. Drawing the offset
+    once outside the loop collapses this into systematic.
     """
     cdf, Z = _cdf(probs)
     delta = Z / S
-    return _pick(cdf, (np.arange(S) + rng.random(S)) * delta)
+    thr = (np.arange(S)[None, :] + rng.random((T, S))) * delta
+    return _pick(cdf, thr)
 
 
-def sample_mcmc_nn(probs, S, rng, burn_in: int = 0, update: str = "glauber"):
-    """Nearest-neighbour random walk with Glauber or Metropolis acceptance.
+# -------------------------------------------------------------- MCMC samplers
 
-    Included for completeness, with a warning: on a ring of nk = 4096 states a
-    nearest-neighbour walk is diffusive, so its mixing time scales like nk^2.
-    At any S a sampler budget would tolerate, the chain has explored O(sqrt(S))
-    positions and is nowhere near stationary. Expect it to lose badly, and read
-    that as a statement about the proposal, not about MCMC in general.
+
+def batch_mcmc(probs, S, rng, T, proposal="nn", update="glauber", burn_in=0):
+    """Random-walk MCMC targeting Categorical(p), T chains in parallel.
+
+    proposal
+        ``nn``      -- +-1 on a ring of nk states (symmetric)
+        ``uniform`` -- jump to a uniformly chosen different state (symmetric)
+
+    update
+        ``metropolis`` -- accept w.p. min(1, p_cand / p_curr)
+        ``glauber``    -- accept w.p. sigmoid(log p_cand - log p_curr)
+
+    Both proposals are symmetric, so the Hastings ratio drops out and both
+    updates leave Categorical(p) invariant. Invariance is not in question; the
+    question is how many steps it takes to get there.
+
+    Returns ``(idx, accept_rate)`` where idx has shape (T, S).
     """
-    logp = np.log(np.clip(probs, 1e-300, None))
-    n = len(probs)
-    cur = int(rng.integers(n))
-    out = np.empty(S, dtype=np.int64)
+    logp = np.log(np.clip(np.asarray(probs, dtype=np.float64), 1e-300, None))
+    n = len(logp)
     steps = burn_in + S
-    offs = rng.integers(0, 2, size=steps) * 2 - 1
-    unis = rng.random(steps)
+    cur = rng.integers(0, n, size=T)
+    out = np.empty((T, S), dtype=np.int64)
+    accepted = 0
+    total = 0
+
+    if proposal == "nn":
+        offs = rng.integers(0, 2, size=(steps, T)) * 2 - 1
+    else:
+        offs = rng.integers(1, n, size=(steps, T))
+    unis = rng.random((steps, T))
+
     for t in range(steps):
-        cand = (cur + int(offs[t])) % n
+        cand = (cur + offs[t]) % n
         d = logp[cand] - logp[cur]
         if update == "glauber":
-            acc = 1.0 / (1.0 + np.exp(-d))
+            acc = 1.0 / (1.0 + np.exp(-np.clip(d, -700, 700)))
         else:
-            acc = 1.0 if d >= 0 else np.exp(d)
-        if unis[t] < acc:
-            cur = cand
+            acc = np.minimum(1.0, np.exp(np.clip(d, -700, 0)))
+        take = unis[t] < acc
+        cur = np.where(take, cand, cur)
         if t >= burn_in:
-            out[t - burn_in] = cur
-    return out
+            out[:, t - burn_in] = cur
+            accepted += int(take.sum())
+            total += T
+
+    return out, (accepted / total if total else float("nan"))
 
 
-def sample_mcmc_uniform(probs, S, rng, burn_in: int = 0, update: str = "glauber"):
-    """Independence-style proposal: jump to a uniformly random other state."""
-    logp = np.log(np.clip(probs, 1e-300, None))
-    n = len(probs)
-    cur = int(rng.integers(n))
-    out = np.empty(S, dtype=np.int64)
-    steps = burn_in + S
-    cands = rng.integers(1, n, size=steps)
-    unis = rng.random(steps)
-    for t in range(steps):
-        cand = int((cur + cands[t]) % n)
-        d = logp[cand] - logp[cur]
-        if update == "glauber":
-            acc = 1.0 / (1.0 + np.exp(-d))
-        else:
-            acc = 1.0 if d >= 0 else np.exp(d)
-        if unis[t] < acc:
-            cur = cand
-        if t >= burn_in:
-            out[t - burn_in] = cur
-    return out
+def _mk_mcmc(proposal, update):
+    def f(probs, S, rng, T, burn_in=0):
+        return batch_mcmc(probs, S, rng, T, proposal=proposal,
+                          update=update, burn_in=burn_in)
+    return f
 
 
-SAMPLERS = {
-    "iid": sample_iid,
-    "systematic": sample_systematic,
-    "stratified": sample_stratified,
-    "mcmc_nn_glauber": lambda p, S, r: sample_mcmc_nn(p, S, r, burn_in=0),
-    "mcmc_uni_glauber": lambda p, S, r: sample_mcmc_uniform(p, S, r, burn_in=0),
+BATCH_SAMPLERS = {
+    "iid": batch_iid,
+    "systematic": batch_systematic,
+    "stratified": batch_stratified,
+    "mcmc_nn_glauber": _mk_mcmc("nn", "glauber"),
+    "mcmc_nn_metropolis": _mk_mcmc("nn", "metropolis"),
+    "mcmc_uni_glauber": _mk_mcmc("uniform", "glauber"),
+    "mcmc_uni_metropolis": _mk_mcmc("uniform", "metropolis"),
 }
 
-# The three that share a common cost model (S value-row fetches, no chain state).
-CORE_SAMPLERS = ["iid", "systematic", "stratified"]
+MCMC_SAMPLERS = [k for k in BATCH_SAMPLERS if k.startswith("mcmc_")]
+CDF_SAMPLERS = ["iid", "systematic", "stratified"]
+ALL_SAMPLERS = CDF_SAMPLERS + MCMC_SAMPLERS
+
+
+def draw(name, probs, S, rng, T, burn_in=0):
+    """Uniform entry point. Returns (idx[T, S], accept_rate_or_nan)."""
+    fn = BATCH_SAMPLERS[name]
+    if name in MCMC_SAMPLERS:
+        return fn(probs, S, rng, T, burn_in=burn_in)
+    return fn(probs, S, rng, T), float("nan")

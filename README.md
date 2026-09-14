@@ -190,8 +190,11 @@ The staging step exists because `kevin-workspace` is ReadWriteOnce: four eval
 pods cannot reliably mount it at once. Copying the dump to the CephFS
 `kevin-ruler-shared` volume first makes the eval embarrassingly parallel, and it
 means evaluation can run while a capture job still holds the workspace volume.
-The eval Job uses `completionMode: Indexed`, so `JOB_COMPLETION_INDEX` picks the
-task and one Job object covers all four.
+The eval Job uses `completionMode: Indexed` with 8 pods: `JOB_COMPLETION_INDEX`
+selects one of 4 RULER tasks and one of two sampler families. Indices 0–3 run
+the CDF samplers, 4–7 run the MCMC variants. Splitting the families means the
+fast CDF results land in minutes instead of queueing behind the chains, and an
+MCMC failure cannot take the CDF results with it.
 
 Everything is CPU-only. No GPU is requested for any of it.
 
@@ -219,6 +222,35 @@ argmax on a peaked distribution.
 pinned at −0.5 by the CLT. A sampler that only moves `C` buys a constant factor;
 one that steepens the slope changes what is reachable at a given budget. A
 bar chart at a single `S` cannot tell those apart.
+
+### The MCMC comparison
+
+All four variants are run: nearest-neighbour and uniform proposals, each with
+Glauber and Metropolis acceptance. Both proposals are symmetric so the Hastings
+ratio drops out, and both updates leave Categorical(p) invariant — invariance is
+not in question, mixing time is.
+
+A negative result is only worth having if the method was given its best case,
+so the comparison is deliberately generous to MCMC:
+
+- **Cost-matched budgets.** An MCMC step compares two unnormalized scores; it
+  needs no CDF and no normalizing constant, which is the genuine argument in its
+  favour. The CDF samplers pay O(nk) before drawing anything. So MCMC is also
+  run at 1024 and 4096 steps, against the CDF samplers' 64 — if it still loses
+  there, it loses on its own cost model.
+- **A burn-in pass.** Every variant is re-run discarding `10·S` steps before
+  collecting, so "it hadn't converged yet" is settled in the data.
+- **Diagnostics, not just verdicts.** `distinct_frac` (what fraction of steps
+  landed on a new state), `accept_rate`, and `tv_distance` are recorded per
+  cell, so the failure can be attributed. A nearest-neighbour walk on a ring of
+  nk states is diffusive: mixing time scales like nk², so after S steps it has
+  explored O(√S) positions. On a 4096-token context at any usable budget, the
+  chain has seen a tiny contiguous arc of the distribution. `distinct_frac`
+  shows this directly, and `argmax_hit_rate` shows the consequence.
+
+Read `tv_distance` only against the i.i.d. row at the same S. An S-point
+empirical measure cannot match a dense target, so i.i.d. is the achievable
+floor, not zero.
 
 ### The ordering control
 

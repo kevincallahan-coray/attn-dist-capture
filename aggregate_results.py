@@ -29,6 +29,14 @@ def load(paths: list[str]) -> list[dict]:
     return rows
 
 
+def _nanmean(a):
+    """nanmean that returns nan for an all-nan slice without warning.
+    accept_rate is nan by construction for the non-MCMC samplers."""
+    a = np.asarray(a, dtype=float)
+    ok = np.isfinite(a)
+    return float(a[ok].mean()) if ok.any() else float("nan")
+
+
 def fit_slope(S: np.ndarray, err: np.ndarray) -> tuple[float, float]:
     ok = (S > 0) & (err > 0) & np.isfinite(err)
     if ok.sum() < 3:
@@ -60,7 +68,10 @@ def main() -> None:
     for r in rows:
         key = (r["stratum"], r["order"], r["sampler"], r["S"])
         cell[key].append(r[args.metric])
-        extra[key].append((r["argmax_hit_rate"], r["distinct_mean"]))
+        extra[key].append((r["argmax_hit_rate"], r["distinct_mean"],
+                           r.get("distinct_frac", float("nan")),
+                           r.get("accept_rate", float("nan")),
+                           r.get("tv_distance", float("nan"))))
 
     strata = sorted({k[0] for k in cell}, key=lambda s:
                     {"peaked": 0, "mid": 1, "diffuse": 2}.get(s, 3))
@@ -72,13 +83,15 @@ def main() -> None:
     with open(out / "cells.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["stratum", "order", "sampler", "S", "n_records",
-                    args.metric, "argmax_hit_rate", "distinct_mean"])
+                    args.metric, "argmax_hit_rate", "distinct_mean",
+                    "distinct_frac", "accept_rate", "tv_distance"])
         for k in sorted(cell):
             vals = cell[k]
-            hits = np.mean([e[0] for e in extra[k]])
-            dis = np.mean([e[1] for e in extra[k]])
+            e = np.array(extra[k], dtype=float)
             w.writerow([*k, len(vals), f"{np.mean(vals):.6g}",
-                        f"{hits:.4f}", f"{dis:.2f}"])
+                        f"{np.mean(e[:,0]):.4f}", f"{np.mean(e[:,1]):.2f}",
+                        f"{_nanmean(e[:,2]):.4f}", f"{_nanmean(e[:,3]):.4f}",
+                        f"{_nanmean(e[:,4]):.4f}"])
 
     # ---- rate table
     print(f"\nconvergence of {args.metric}: err ~ C * S^slope  "
@@ -128,6 +141,30 @@ def main() -> None:
                                  if a and b and np.mean(a) > 0 else float("nan"))
                 print(f"{st:>9} {sm:>17} " +
                       "".join(f"{c:>10.3f}" for c in cells))
+            print()
+
+    # ---- MCMC diagnostics: why, not just whether
+    mcmc = [sm for sm in samplers if sm.startswith("mcmc_")]
+    if mcmc:
+        print("MCMC diagnostics on the natural order. distinct_frac is the "
+              "fraction of\ndrawn steps that were distinct states; a diffusive "
+              "chain repeats itself.\ntv_distance is only interpretable against "
+              "the iid row at the same S,\nwhich is the achievable floor for an "
+              "S-point empirical measure.\n")
+        od = "natural" if "natural" in orders else orders[0]
+        for st in strata:
+            print(f"--- {st} ---")
+            print(f"{'sampler':>24} {'S':>7} {'distinct_frac':>14} "
+                  f"{'accept':>8} {'TV':>8} {'argmax_hit':>11}")
+            for sm in ["iid"] + mcmc if "iid" in samplers else mcmc:
+                for S in budgets:
+                    k = (st, od, sm, S)
+                    if k not in extra:
+                        continue
+                    e = np.array(extra[k], dtype=float)
+                    print(f"{sm:>24} {S:>7} {_nanmean(e[:,2]):>14.3f} "
+                          f"{_nanmean(e[:,3]):>8.3f} {_nanmean(e[:,4]):>8.3f} "
+                          f"{np.mean(e[:,0]):>11.3f}")
             print()
 
     # ---- plots
