@@ -270,11 +270,24 @@ the shuffle; that doubles as a correctness check on the harness.
 scripts\fetch-results.bat
 ```
 
-Runs `k8s/job-publish-results.yaml`, which tars the summary CSVs, the figures,
-the gzipped per-record rows and the capture manifests, and emits the archive as
-base64 on stdout. The script decodes the log and unpacks into `.\results`.
+Runs `k8s/job-publish-results.yaml`, which tars the summary CSVs, the figures
+and the capture manifests, and emits the archive as base64 on stdout. The batch
+script decodes it with `certutil` and unpacks into `.\results`. Only `cmd`
+builtins plus `certutil` and `tar` are used, both of which ship with Windows 10
+and later.
+
 Streaming through the log avoids `kubectl cp`, which would require parking an
-idle pod. The job aborts rather than emitting anything over 8 MB.
+idle pod. Two constraints follow from that, and they are why the job is shaped
+the way it is:
+
+- **stdout carries the base64 and nothing else.** `certutil -decode` needs a
+  clean file, and `kubectl logs` merges stderr into the same stream, so any
+  progress output would corrupt the payload. The file listing ships inside the
+  archive as `MANIFEST.txt`.
+- **Raw per-record rows are excluded.** They are ~14 MB gzipped and would blow
+  the log budget. The summaries are what the plots are built from; the payload
+  lands around 1 MB. To retrieve raw rows, use `k8s/job-export-dump.yaml` to tar
+  them onto the PVC.
 
 See [FIELDS.md](FIELDS.md) for what every column in the output tables means.
 

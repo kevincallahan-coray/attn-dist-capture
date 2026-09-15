@@ -1,15 +1,19 @@
-# Package every table and figure and emit it as base64 on stdout, then exit.
+# Package the summary tables and figures and emit them as base64 on stdout.
 #
-# Why not kubectl cp: that needs a *running* pod, which would mean parking an
-# idle container. The summary is small (CSVs plus a few PNGs), so streaming it
-# through the job log is both smaller and policy-clean. The job refuses to emit
-# anything over 8 MB rather than flooding the log.
+# stdout carries the base64 payload and NOTHING else: certutil -decode on
+# Windows needs a clean base64 file, and kubectl merges stderr into the log
+# stream, so any progress chatter would corrupt the payload. The file listing
+# travels inside the archive as MANIFEST.txt instead.
+#
+# Raw per-record rows are deliberately excluded -- they are ~14 MB gzipped and
+# the summaries are what the plots are built from. To retrieve raw data, use
+# k8s/job-export-dump.yaml to tar it onto the PVC.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: attn-publish-results
 spec:
-  backoffLimit: 1
+  backoffLimit: 0
   ttlSecondsAfterFinished: 86400
   template:
     spec:
@@ -25,42 +29,48 @@ spec:
           args:
             - |
               set -euo pipefail
+              exec 3>&1           # keep a clean handle for the payload
+              exec 1>/tmp/build.log 2>&1
+
               ROOT=/shared/attn-eval
               STAGE=/tmp/attn-results
               rm -rf "$STAGE"; mkdir -p "$STAGE"
 
-              # tables and figures
               for D in "$ROOT"/summary_4096 "$ROOT"/summary_4096_rel; do
                 [ -d "$D" ] || continue
                 mkdir -p "$STAGE/$(basename "$D")"
                 cp "$D"/* "$STAGE/$(basename "$D")"/ 2>/dev/null || true
               done
-              # raw per-record rows, compressed, so re-slicing is possible locally
-              mkdir -p "$STAGE/raw"
-              for F in "$ROOT"/ruler_4096/*.jsonl; do
-                [ -f "$F" ] || continue
-                gzip -c "$F" > "$STAGE/raw/$(basename "$F").gz"
-              done
-              # capture manifests, so the results stay traceable to a run
+
               mkdir -p "$STAGE/manifests"
               for M in /shared/attn-dist/ruler_4096/*/manifest.json; do
                 [ -f "$M" ] || continue
                 cp "$M" "$STAGE/manifests/$(basename "$(dirname "$M")").json"
               done
 
-              echo "=== contents ==="
-              find "$STAGE" -type f -printf '%10s  %p\n' | sort -k2
+              {
+                echo "attn-dist-capture results"
+                echo "generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                echo
+                echo "raw per-record rows are NOT included; see job-export-dump.yaml"
+                echo
+                echo "source row counts:"
+                for F in "$ROOT"/ruler_4096/*.jsonl; do
+                  [ -f "$F" ] || continue
+                  echo "  $(basename "$F"): $(wc -l < "$F") rows"
+                done
+                echo
+                echo "contents:"
+                find "$STAGE" -type f -printf '  %10s  %P\n' | sort -k2
+              } > "$STAGE/MANIFEST.txt"
 
               tar czf /tmp/attn-results.tar.gz -C /tmp attn-results
               SIZE=$(stat -c%s /tmp/attn-results.tar.gz)
-              echo "=== archive: $SIZE bytes ==="
-              if [ "$SIZE" -gt 8388608 ]; then
-                echo "archive over 8 MB; drop raw/ and rerun, or use the export job"
+              if [ "$SIZE" -gt 6291456 ]; then
+                echo "archive ${SIZE} bytes, over the 6 MB log limit" >&2
                 exit 1
               fi
-              echo "-----BEGIN ATTN RESULTS-----"
-              base64 -w 120 /tmp/attn-results.tar.gz
-              echo "-----END ATTN RESULTS-----"
+              base64 -w 120 /tmp/attn-results.tar.gz >&3
           resources:
             requests: {cpu: "1", memory: 2Gi}
             limits: {cpu: "2", memory: 4Gi}
