@@ -264,6 +264,20 @@ sampler was exploiting position — which matters for whether the result
 transfers to other models or context lengths. i.i.d. should be unaffected by
 the shuffle; that doubles as a correctness check on the harness.
 
+## Getting results onto your machine
+
+```
+scripts\fetch-results.bat
+```
+
+Runs `k8s/job-publish-results.yaml`, which tars the summary CSVs, the figures,
+the gzipped per-record rows and the capture manifests, and emits the archive as
+base64 on stdout. The script decodes the log and unpacks into `.\results`.
+Streaming through the log avoids `kubectl cp`, which would require parking an
+idle pod. The job aborts rather than emitting anything over 8 MB.
+
+See [FIELDS.md](FIELDS.md) for what every column in the output tables means.
+
 ## Files
 
 ```
@@ -274,6 +288,7 @@ inspect_dump.py           validation + population stats
 samplers.py               iid / systematic / stratified / MCMC implementations
 eval_samplers.py          per-record error sweep, writes JSONL
 aggregate_results.py      merges shards, fits rates, plots
+FIELDS.md                 what every output column means
 k8s/                      Nautilus Jobs (capture, inspect, export)
 scripts/                  Windows helpers matching the adaptive-SANTA workflow
 ```
