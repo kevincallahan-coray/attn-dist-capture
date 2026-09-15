@@ -36,7 +36,7 @@ spec:
               STAGE=/tmp/attn-results
               rm -rf "$STAGE"; mkdir -p "$STAGE"
 
-              for D in "$ROOT"/summary_4096 "$ROOT"/summary_4096_rel; do
+              for D in "$ROOT"/summary_*; do
                 [ -d "$D" ] || continue
                 mkdir -p "$STAGE/$(basename "$D")"
                 cp "$D"/* "$STAGE/$(basename "$D")"/ 2>/dev/null || true

@@ -40,7 +40,14 @@ spec:
                 --inputs '/shared/attn-eval/ruler_4096/*.jsonl' \
                 --out-dir /shared/attn-eval/summary_4096_rel \
                 --metric rel_mean --no-plot
-              ls -R /shared/attn-eval/summary_4096
+              echo "=== best-start view: CDF samplers + argmax-init MCMC, burn-in rows dropped ==="
+              python aggregate_results.py \
+                --inputs '/shared/attn-eval/ruler_4096/*.jsonl' \
+                --out-dir /shared/attn-eval/summary_4096_beststart \
+                --metric scaled_mean \
+                --exclude '+burn' \
+                --label beststart
+              ls -R /shared/attn-eval/summary_4096 /shared/attn-eval/summary_4096_beststart
           resources:
             requests: {cpu: "1", memory: 4Gi}
             limits: {cpu: "2", memory: 8Gi}

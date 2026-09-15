@@ -240,6 +240,14 @@ so the comparison is deliberately generous to MCMC:
   there, it loses on its own cost model.
 - **A burn-in pass.** Every variant is re-run discarding `10·S` steps before
   collecting, so "it hadn't converged yet" is settled in the data.
+- **A best-start pass** (`--mcmc-init argmax`, `k8s/job-eval-mcmc-argmax.yaml`).
+  Every chain begins at the highest-probability token instead of a random one,
+  with no burn-in. This is an *alternative* to burn-in rather than a complement:
+  burn-in spends steps walking to the mode, this starts there. It is the most
+  favourable initialization available. Two honest caveats: the argmax is an
+  O(nk) scan, the same complexity class as the CDF that MCMC was supposed to
+  avoid; and starting at the mode deliberately biases early samples toward it,
+  which helps here — that is the point.
 - **Diagnostics, not just verdicts.** `distinct_frac` (what fraction of steps
   landed on a new state), `accept_rate`, and `tv_distance` are recorded per
   cell, so the failure can be attributed. A nearest-neighbour walk on a ring of
@@ -251,6 +259,22 @@ so the comparison is deliberately generous to MCMC:
 Read `tv_distance` only against the i.i.d. row at the same S. An S-point
 empirical measure cannot match a dense target, so i.i.d. is the achievable
 floor, not zero.
+
+### Reading a flat slope with a low constant
+
+The best-start pass produces the one result pattern that is easy to
+misread. On peaked records, argmax-initialized chains can show *lower* error
+than i.i.d. at small S while having a slope of ~0.00. That is not a win. A flat
+slope with a low floor means the estimator has stopped being a sampler: the
+chain sits on the mode and returns approximately `V[argmax]` every time. The
+error it plateaus at is the bias of that point estimate. It beats i.i.d. at
+S=8 because on a peaked distribution the mode is a decent guess, and it loses
+to systematic by S=128 because the competitors keep converging and it does not.
+
+The diagnostic that settles it is `distinct_frac` together with the slope: a
+sampler that is genuinely converging visits new states and its error falls.
+Report the slope next to the small-S numbers or the small-S numbers will be
+quoted on their own.
 
 ### The ordering control
 

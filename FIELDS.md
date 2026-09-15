@@ -12,7 +12,7 @@ by least squares on log(error) vs log(S) across all budgets in the sweep.
 |---|---|
 | `stratum` | Which population the record came from. `peaked` = top-32 tokens hold >95% of the mass (attention-sink behaviour), `diffuse` = they hold <50%, `mid` = in between. |
 | `order` | `natural` = tokens in position order. `shuffled` = the same distribution with the index axis randomly permuted. |
-| `sampler` | Method. A `+burn10S` suffix means 10·S steps were discarded before collecting. |
+| `sampler` | Method. Suffixes: `+burn10S` = 10·S steps discarded before collecting; `+argmax0` = chain initialized at the highest-probability token with no burn-in. |
 | `slope` | **How fast error falls as you add samples.** −0.5 is plain Monte Carlo. More negative is better. |
 | `C` | The fitted error at S=1 — the constant factor. Two samplers with the same slope but different C differ by a fixed ratio at every budget. |
 | `S=…` | Mean error at that budget, in whatever metric was selected. |
@@ -32,6 +32,14 @@ log-log plot: **a 10× increase in samples multiplies error by 10^slope.**
 A slope near zero is the important signal: it means the estimator is not
 consistent at the budgets tested. That is qualitatively different from being
 merely inefficient, and no amount of extra sampling fixes it.
+
+**Watch for a flat slope with a small `C`.** An argmax-initialized chain on a
+peaked distribution can beat i.i.d. at S=8 and still have slope ≈ 0. That
+combination means the chain is parked on the mode returning roughly `V[argmax]`
+every time, and the value it plateaus at is that point estimate's bias, not
+sampling error. It is a good guess, not a converging estimator, and the
+competitors overtake it as S grows. Always quote the slope alongside any
+small-S advantage.
 
 Slope and C answer different questions. A sampler that only improves `C` saves
 a constant factor. One that steepens `slope` changes what is reachable at a

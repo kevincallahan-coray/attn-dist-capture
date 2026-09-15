@@ -59,6 +59,10 @@ def main() -> None:
     p.add_argument("--max-records", type=int, default=400)
     p.add_argument("--samplers", default=",".join(CDF_SAMPLERS + MCMC_SAMPLERS))
     p.add_argument("--orders", default="natural,shuffled")
+    p.add_argument("--mcmc-init", choices=["random", "argmax"], default="random",
+                   help="argmax starts every chain at the top-probability "
+                        "token: the most favourable start available, and an "
+                        "alternative to burn-in rather than a complement")
     p.add_argument("--mcmc-burnin-mult", type=float, default=0.0,
                    help="burn-in steps as a multiple of S, discarded before "
                         "collecting. Label is suffixed so runs stay separable")
@@ -74,7 +78,11 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
     T = args.trials
     bmult = args.mcmc_burnin_mult
-    suffix = f"+burn{bmult:g}S" if bmult > 0 else ""
+    suffix = ""
+    if args.mcmc_init == "argmax":
+        suffix += "+argmax0"
+    if bmult > 0:
+        suffix += f"+burn{bmult:g}S"
 
     usable = [r for r in d.index if r.get("v_key")]
     if not usable:
@@ -121,7 +129,8 @@ def main() -> None:
                 sweep = budgets + extra if is_mcmc else budgets
                 for S in sweep:
                     burn = int(bmult * S) if is_mcmc else 0
-                    idx, acc = draw(name, probs, S, rng, T, burn_in=burn)
+                    idx, acc = draw(name, probs, S, rng, T, burn_in=burn,
+                                    init=args.mcmc_init)
 
                     # Go through visit counts rather than V[idx].mean(). The
                     # gather materializes (T, S, d), which at S=4096 is 134 MB
@@ -148,6 +157,7 @@ def main() -> None:
                         "sampler": name + (suffix if is_mcmc else ""),
                         "family": "mcmc" if is_mcmc else "cdf",
                         "S": S, "burn_in": burn, "trials": T,
+                        "mcmc_init": args.mcmc_init if is_mcmc else None,
                         "av_norm": av_norm, "v_rms": v_rms,
                         "abs_mean": float(err.mean()),
                         "abs_p50": float(np.percentile(err, 50)),

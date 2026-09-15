@@ -51,6 +51,15 @@ def main() -> None:
                    help="glob for the eval shards, e.g. 'results/*.jsonl'")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--metric", default="scaled_mean", choices=METRICS)
+    p.add_argument("--exclude", default="",
+                   help="comma-separated substrings; drop rows whose sampler "
+                        "label contains any of them (e.g. '+burn')")
+    p.add_argument("--include", default="",
+                   help="comma-separated substrings; keep only rows whose "
+                        "sampler label contains one of them")
+    p.add_argument("--label", default="",
+                   help="suffix for the plot filenames, so variants do not "
+                        "overwrite each other")
     p.add_argument("--no-plot", action="store_true")
     args = p.parse_args()
 
@@ -58,6 +67,14 @@ def main() -> None:
     if not paths:
         raise SystemExit(f"no files matched {args.inputs}")
     rows = load(paths)
+    exc = [x for x in args.exclude.split(",") if x]
+    inc = [x for x in args.include.split(",") if x]
+    if exc:
+        rows = [r for r in rows if not any(x in r["sampler"] for x in exc)]
+    if inc:
+        rows = [r for r in rows if any(x in r["sampler"] for x in inc)]
+    if not rows:
+        raise SystemExit("every row was filtered out; check --include/--exclude")
     out = pathlib.Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     print(f"loaded {len(rows)} rows from {len(paths)} shards")
@@ -198,9 +215,10 @@ def main() -> None:
                 ax.grid(True, which="both", alpha=0.3)
             axs[0].legend(fontsize=8)
             fig.tight_layout()
-            fig.savefig(out / f"error_vs_samples_{od}.png", dpi=200)
+            tag = f"_{args.label}" if args.label else ""
+            fig.savefig(out / f"error_vs_samples_{od}{tag}.png", dpi=200)
             plt.close(fig)
-            print(f"wrote {out}/error_vs_samples_{od}.png")
+            print(f"wrote {out}/error_vs_samples_{od}{tag}.png")
 
 
 if __name__ == "__main__":

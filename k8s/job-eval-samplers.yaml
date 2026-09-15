@@ -103,6 +103,23 @@ spec:
                   --orders natural \
                   --seed "$IDX"
                 wc -l "$OUTDIR/${TASK}_mcmc_burn.jsonl"
+
+                # Pass 3: best possible start. Every chain begins at the
+                # highest-probability token rather than a random one, with no
+                # burn-in. An alternative to pass 2, not a complement.
+                python eval_samplers.py \
+                  --dump "$DUMP" \
+                  --out "$OUTDIR/${TASK}_mcmc_argmax.jsonl" \
+                  --samplers mcmc_nn_glauber,mcmc_nn_metropolis,mcmc_uni_glauber,mcmc_uni_metropolis \
+                  --budgets 4,8,16,32,64,128,256,512 \
+                  --mcmc-extra-budgets 1024,4096 \
+                  --mcmc-init argmax \
+                  --trials 32 \
+                  --max-records 300 \
+                  --stratify-balanced \
+                  --orders natural,shuffled \
+                  --seed "$IDX"
+                wc -l "$OUTDIR/${TASK}_mcmc_argmax.jsonl"
               fi
           resources:
             requests: {cpu: "2", memory: 8Gi}

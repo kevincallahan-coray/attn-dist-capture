@@ -1,0 +1,83 @@
+# Best-start MCMC pass: every chain is initialized at the highest-probability
+# token instead of a uniformly random one, and no burn-in is discarded.
+#
+# This is the most favourable initialization available -- the chain begins
+# exactly where the mass is, so it pays nothing to random-walk there. It is an
+# alternative to burn-in, not a complement: burn-in pays steps to reach the
+# mode, this starts there.
+#
+# Standalone (4 pods, one per task) so it can be added to an existing results
+# directory without recomputing the CDF or cold-start passes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: attn-eval-mcmc-argmax
+spec:
+  completions: 4
+  parallelism: 4
+  completionMode: Indexed
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 14400
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: clone
+          image: alpine/git
+          command: ["sh", "-c"]
+          args:
+            - git clone --depth 1 https://github.com/kevincallahan-coray/attn-dist-capture.git /repo
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+      containers:
+        - name: eval
+          image: python:3.11-slim
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              TASKS=(qa_1 qa_2 fwe niah_multivalue)
+              TASK="${TASKS[$JOB_COMPLETION_INDEX]}"
+              echo "index=$JOB_COMPLETION_INDEX task=$TASK (argmax start)"
+
+              pip install -q "numpy<2"
+              cd /repo
+
+              DUMP=/shared/attn-dist/ruler_4096/$TASK
+              OUTDIR=/shared/attn-eval/ruler_4096
+              test -d "$DUMP"
+              mkdir -p "$OUTDIR"
+
+              python eval_samplers.py \
+                --dump "$DUMP" \
+                --out "$OUTDIR/${TASK}_mcmc_argmax.jsonl" \
+                --samplers mcmc_nn_glauber,mcmc_nn_metropolis,mcmc_uni_glauber,mcmc_uni_metropolis \
+                --budgets 4,8,16,32,64,128,256,512 \
+                --mcmc-extra-budgets 1024,4096 \
+                --mcmc-init argmax \
+                --trials 32 \
+                --max-records 300 \
+                --stratify-balanced \
+                --orders natural,shuffled \
+                --seed "$JOB_COMPLETION_INDEX"
+
+              wc -l "$OUTDIR/${TASK}_mcmc_argmax.jsonl"
+          resources:
+            requests: {cpu: "2", memory: 8Gi}
+            limits: {cpu: "4", memory: 16Gi}
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+            - name: shared
+              mountPath: /shared
+      volumes:
+        - name: repo
+          emptyDir: {}
+        - name: shared
+          persistentVolumeClaim:
+            claimName: kevin-ruler-shared

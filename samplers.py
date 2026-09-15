@@ -70,7 +70,8 @@ def batch_stratified(probs, S, rng, T):
 # -------------------------------------------------------------- MCMC samplers
 
 
-def batch_mcmc(probs, S, rng, T, proposal="nn", update="glauber", burn_in=0):
+def batch_mcmc(probs, S, rng, T, proposal="nn", update="glauber", burn_in=0,
+               init="random"):
     """Random-walk MCMC targeting Categorical(p), T chains in parallel.
 
     proposal
@@ -81,6 +82,19 @@ def batch_mcmc(probs, S, rng, T, proposal="nn", update="glauber", burn_in=0):
         ``metropolis`` -- accept w.p. min(1, p_cand / p_curr)
         ``glauber``    -- accept w.p. sigmoid(log p_cand - log p_curr)
 
+    init
+        ``random`` -- uniform over states, the honest cold start
+        ``argmax`` -- every chain starts at the highest-probability token.
+                      This is the most favourable initialization available:
+                      the chain begins exactly where the mass is, so it pays
+                      nothing to random-walk there. Note it is not free -- the
+                      argmax is an O(nk) scan, the same complexity class as the
+                      CDF the other samplers build, which is the cost advantage
+                      MCMC was supposed to have. It also deliberately biases the
+                      start toward the mode, so early samples over-represent it;
+                      that bias helps here rather than hurting, which is the
+                      point of running it.
+
     Both proposals are symmetric, so the Hastings ratio drops out and both
     updates leave Categorical(p) invariant. Invariance is not in question; the
     question is how many steps it takes to get there.
@@ -90,7 +104,10 @@ def batch_mcmc(probs, S, rng, T, proposal="nn", update="glauber", burn_in=0):
     logp = np.log(np.clip(np.asarray(probs, dtype=np.float64), 1e-300, None))
     n = len(logp)
     steps = burn_in + S
-    cur = rng.integers(0, n, size=T)
+    if init == "argmax":
+        cur = np.full(T, int(np.argmax(logp)), dtype=np.int64)
+    else:
+        cur = rng.integers(0, n, size=T)
     out = np.empty((T, S), dtype=np.int64)
     accepted = 0
     total = 0
@@ -119,9 +136,9 @@ def batch_mcmc(probs, S, rng, T, proposal="nn", update="glauber", burn_in=0):
 
 
 def _mk_mcmc(proposal, update):
-    def f(probs, S, rng, T, burn_in=0):
+    def f(probs, S, rng, T, burn_in=0, init="random"):
         return batch_mcmc(probs, S, rng, T, proposal=proposal,
-                          update=update, burn_in=burn_in)
+                          update=update, burn_in=burn_in, init=init)
     return f
 
 
@@ -140,9 +157,9 @@ CDF_SAMPLERS = ["iid", "systematic", "stratified"]
 ALL_SAMPLERS = CDF_SAMPLERS + MCMC_SAMPLERS
 
 
-def draw(name, probs, S, rng, T, burn_in=0):
+def draw(name, probs, S, rng, T, burn_in=0, init="random"):
     """Uniform entry point. Returns (idx[T, S], accept_rate_or_nan)."""
     fn = BATCH_SAMPLERS[name]
     if name in MCMC_SAMPLERS:
-        return fn(probs, S, rng, T, burn_in=burn_in)
+        return fn(probs, S, rng, T, burn_in=burn_in, init=init)
     return fn(probs, S, rng, T), float("nan")
